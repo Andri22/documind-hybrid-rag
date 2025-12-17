@@ -8,7 +8,6 @@
 > **DocuMind** is a production-oriented RAG (Retrieval-Augmented Generation) application that transforms static PDF documents into interactive conversations. It features a **Hybrid AI Architecture** combining the speed of **Groq LPU** with the privacy and cost-efficiency of **Local Embeddings**.
 
 ![App Demo](demo_app.png)
-*(Note: Upload a screenshot named `demo_app.png` to your repository root)*
 
 ## 🚀 Key Differentiators
 
