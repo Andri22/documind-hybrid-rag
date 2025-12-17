@@ -2,9 +2,12 @@ import os
 import sys
 from dotenv import load_dotenv
 
+# --- KONFIGURASI AWAL ---
+# Mematikan parallel processing tokenizer agar tidak konflik
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # --- IMPORTS ---
 from langchain_groq import ChatGroq
-# GANTI INI: Kita pakai HuggingFace (Local) alih-alih Google
 from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
@@ -16,53 +19,92 @@ from langchain_core.output_parsers import StrOutputParser
 # 1. Load Config
 load_dotenv()
 
-# Cek Key (Hanya butuh Groq sekarang)
-if not os.getenv("GROQ_API_KEY"):
-    print("❌ Error: GROQ_API_KEY tidak ditemukan di .env")
-    sys.exit(1)
+# Konstanta Path
+CHROMA_PATH = "chroma_db"  # Folder untuk menyimpan database vektor
+PDF_FILE = "data.pdf"
 
-def main():
-    print("=== 🤖 RAG SYSTEM (Hybrid: Local Embed + Cloud LLM) ===")
-    
-    pdf_file = "data.pdf" 
-    
-    # --- 1. PREP DATA ---
-    print(f"DTO: Membaca file {pdf_file}...")
-    if not os.path.exists(pdf_file):
-        print(f"❌ Error: File {pdf_file} tidak ditemukan.")
-        return
+def get_embedding_function():
+    # Menggunakan model yang ringan untuk CPU
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    loader = PyPDFLoader(pdf_file)
+def load_and_split_pdf(file_path):
+    print(f"📄 Loading PDF: {file_path}...")
+    loader = PyPDFLoader(file_path)
     docs = loader.load()
     
-    # OPTIMASI FREE TIER:
-    # Kita batasi chunk size agar tidak terlalu membebani
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    # Chunking strategy
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,      # Diperbesar sedikit agar konteks kalimat utuh
+        chunk_overlap=100    # Overlap diperbesar untuk menjaga kesinambungan antar chunk
+    )
     splits = text_splitter.split_documents(docs)
-    
-    # --- CHANGE IS HERE ---
-    print("DTO: Mendownload/Load Model Local (Mungkin agak lama di awal)...")
-    # Model 'all-MiniLM-L6-v2' itu kecil, cepat, dan standar industri untuk CPU
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    
-    print(f"DTO: Membuat Vector Index untuk {len(splits)} chunks...")
-    # Proses ini murni offline, jadi tidak akan kena Rate Limit API
-    vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) # Ambil top 3 context saja
-    
-    print("✅ System Ready! (Memory Index Created Locally)")
+    return splits
 
-    # Versi terbaru & Tercepat saat ini (Desember 2024/2025 standard)
+def initialize_vectorstore():
+    """
+    Logic Cerdas: Cek apakah DB sudah ada.
+    Jika ADA -> Load dari disk.
+    Jika TIDAK -> Buat baru dari PDF.
+    """
+    embedding_fn = get_embedding_function()
+
+    # Cek apakah folder database sudah ada
+    if os.path.exists(CHROMA_PATH) and os.path.isdir(CHROMA_PATH):
+        print(f"💾 Memuat Vector Database yang sudah ada dari '{CHROMA_PATH}'...")
+        # Load existing DB
+        db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_fn)
+    else:
+        print("🆕 Database belum ditemukan. Memulai proses Indexing baru...")
+        
+        if not os.path.exists(PDF_FILE):
+            print(f"❌ Error: File {PDF_FILE} tidak ditemukan.")
+            sys.exit(1)
+
+        splits = load_and_split_pdf(PDF_FILE)
+        
+        print(f"📊 Membuat Index untuk {len(splits)} chunks... (Ini hanya sekali)")
+        # Create and Save DB
+        db = Chroma.from_documents(
+            documents=splits, 
+            embedding=embedding_fn, 
+            persist_directory=CHROMA_PATH
+        )
+        print("✅ Database berhasil disimpan!")
+
+    return db
+
+def main():
+    print("=== 🤖 RAG SYSTEM V2 (Persistent Storage) ===")
+    
+    # Validasi API Key
+    if not os.path.exists(".env") or not os.getenv("GROQ_API_KEY"):
+        print("❌ Warning: Pastikan .env berisi GROQ_API_KEY")
+
+    # 1. Inisialisasi Database (Hanya load jika sudah ada)
+    vectorstore = initialize_vectorstore()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+    # 2. Setup LLM (Groq Llama 3)
     llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
-    template = """Jawablah pertanyaan berdasarkan context berikut ini saja:
+    # 3. Prompt Engineering (Anti-Halusinasi)
+    template = """Anda adalah asisten AI yang bertugas menjawab pertanyaan berdasarkan dokumen yang diberikan.
     
+    ATURAN:
+    1. Jawablah HANYA berdasarkan konteks berikut.
+    2. Jika jawaban tidak ada di dalam konteks, katakan dengan jujur: "Maaf, informasi tersebut tidak ditemukan dalam dokumen."
+    3. Jangan mengarang jawaban.
+    
+    Context:
     {context}
     
-    Pertanyaan: {question}
-    """
+    Pertanyaan User: {question}
+    
+    Jawaban:"""
+    
     prompt = ChatPromptTemplate.from_template(template)
 
+    # 4. Chain Definition (LCEL)
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
@@ -73,25 +115,28 @@ def main():
         | StrOutputParser()
     )
 
-    print("\n💬 Silakan bertanya (ketik 'exit' untuk keluar).\n")
+    print("\n💬 System Ready. Silakan bertanya! (ketik 'exit' untuk keluar)")
 
+    # 5. Chat Loop
     while True:
-        query = input("User: ")
-        if query.lower() in ["exit", "quit"]:
-            break
-        if not query.strip():
-            continue
-
-        print("🤖 AI: ...", end="\r")
-        
         try:
+            query = input("\nUser: ")
+            if query.lower() in ["exit", "quit"]:
+                break
+            if not query.strip():
+                continue
+
+            print("🤖 AI: Sedang berpikir...", end="\r")
+            
+            # Invoke Chain
             response = rag_chain.invoke(query)
-            print(f"\r🤖 AI: {response}\n")
-            print("-" * 30)
+            
+            # Print hasil bersih
+            print(f"\r🤖 AI: {response}")
+            
         except Exception as e:
-            # Error Handling yang lebih jelas
             if "429" in str(e):
-                print("\n❌ API LIMIT GROQ REACHED. Tunggu sebentar atau coba besok.")
+                print("\n❌ Rate Limit Groq Reached. Coba lagi nanti.")
             else:
                 print(f"\n❌ Error: {e}")
 

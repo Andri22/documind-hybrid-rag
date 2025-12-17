@@ -132,12 +132,19 @@ if "vectorstore" in st.session_state:
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
     llm = load_llm()
 
-    template = """Jawablah pertanyaan berdasarkan context berikut ini saja:
+    template = """Anda adalah asisten AI yang membantu menjawab pertanyaan berdasarkan dokumen PDF yang diunggah.
     
+    Konteks Dokumen:
     {context}
     
-    Pertanyaan: {question}
-    """
+    Pertanyaan User: {question}
+    
+    Instruksi:
+    1. Jawablah berdasarkan konteks di atas.
+    2. Gunakan Bahasa Indonesia yang sopan dan profesional.
+    3. Jika jawaban tidak ada di konteks, katakan: "Maaf, informasi tersebut tidak ditemukan dalam dokumen ini."
+    
+    Jawaban:"""
     prompt = ChatPromptTemplate.from_template(template)
 
     def format_docs(docs):
