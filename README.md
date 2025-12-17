@@ -33,8 +33,8 @@ graph TD
     Context -->|Augment Prompt| LLM[⚡ Groq LPU / Llama-3.1]
     LLM -->|Generate Answer + Citations| UI[💻 Streamlit Chat Interface]
     
-    style LLM fill:#ff9,stroke:#333,stroke-width:2px
-    style VectorDB fill:#9cf,stroke:#333,stroke-width:2px
+    style LLM fill:#FF6D1F,stroke:#333,stroke-width:2px
+    style VectorDB fill:#456882,stroke:#333,stroke-width:2px
 ```
 
 ## 🛠️ Tech Stack
